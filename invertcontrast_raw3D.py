@@ -147,11 +147,15 @@ def process_raw(group, connection, config, metadata):
         logging.debug("Created folder " + debugFolder + " for debug output files")
 
     # Format data into single [cha PE RO phs] array
+    # Format data into single [cha PAR PE RO phs] array
     lin = [acquisition.idx.kspace_encode_step_1 for acquisition in group]
+    par = [acquisition.idx.kspace_encode_step_2 for acquisition in group]
     phs = [acquisition.idx.phase                for acquisition in group]
 
     # Use the zero-padded matrix size
-    data = np.zeros((group[0].data.shape[0], 
+    # [cha z y z pha]
+    data = np.zeros((group[0].data.shape[0],
+                     metadata.encoding[0].encodedSpace.matrixSize.z,
                      metadata.encoding[0].encodedSpace.matrixSize.y, 
                      metadata.encoding[0].encodedSpace.matrixSize.x, 
                      max(phs)+1), 
@@ -159,25 +163,25 @@ def process_raw(group, connection, config, metadata):
 
     rawHead = [None]*(max(phs)+1)
 
-    for acq, lin, phs in zip(group, lin, phs):
-        if (lin < data.shape[1]) and (phs < data.shape[3]):
+    for acq, lin, par, phs in zip(group, lin, par, phs):
+        if (par < data.shape[1]) and(lin < data.shape[2]) and (phs < data.shape[4]):
             # TODO: Account for asymmetric echo in a better way
-            data[:,lin,-acq.data.shape[1]:,phs] = acq.data
+            data[:,par,lin,-acq.data.shape[1]:,phs] = acq.data
 
             # center line of k-space is encoded in user[5]
             if (rawHead[phs] is None) or (np.abs(acq.getHead().idx.kspace_encode_step_1 - acq.getHead().idx.user[5]) < np.abs(rawHead[phs].idx.kspace_encode_step_1 - rawHead[phs].idx.user[5])):
                 rawHead[phs] = acq.getHead()
 
     # Flip matrix in RO/PE to be consistent with ICE
-    data = np.flip(data, (1, 2))
+    data = np.flip(data, (2, 3))
 
     logging.debug("Raw data is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "raw.npy", data)
 
     # Fourier Transform
-    data = fft.fftshift( data, axes=(1, 2))
-    data = fft.ifft2(    data, axes=(1, 2))
-    data = fft.ifftshift(data, axes=(1, 2))
+    data = fft.fftshift( data, axes=(1, 2, 3))
+    data = fft.ifftn(    data, axes=(1, 2, 3))
+    data = fft.ifftshift(data, axes=(1, 2, 3))
     data *= np.prod(data.shape) # FFT scaling for consistency with ICE
 
     # Sum of squares coil combination
@@ -191,12 +195,12 @@ def process_raw(group, connection, config, metadata):
     np.save(debugFolder + "/" + "img.npy", data)
 
     # Remove readout oversampling
-    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
-    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
+    offset = int((data.shape[2] - metadata.encoding[0].reconSpace.matrixSize.x)/2)
+    data = data[:,:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.x]
 
     # Remove phase oversampling
-    offset = int((data.shape[0] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
-    data = data[offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
+    offset = int((data.shape[1] - metadata.encoding[0].reconSpace.matrixSize.y)/2)
+    data = data[:,offset:offset+metadata.encoding[0].reconSpace.matrixSize.y,:]
 
     logging.debug("Image without oversampling is size %s" % (data.shape,))
     np.save(debugFolder + "/" + "imgCrop.npy", data)
@@ -211,7 +215,7 @@ def process_raw(group, connection, config, metadata):
 
     # Format as ISMRMRD image data
     imagesOut = []
-    for phs in range(data.shape[2]):
+    for phs in range(data.shape[3]):
         # Create new MRD instance for the processed image
         # data has shape [PE RO phs], i.e. [y x].
         # from_array() should be called with 'transpose=False' to avoid warnings, and when called
